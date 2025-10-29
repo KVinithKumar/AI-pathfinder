@@ -117,39 +117,119 @@ const analyzeStudentProfileFlow = ai.defineFlow(
     // Removed outputSchema to allow free-form output
   },
   async (input: AnalyzeStudentProfileInput) => {
-    const { output } = await analyzeProfilePrompt(input);
-
-    // Normalize the model output so the UI can always render an array
+    // Helper to normalize any output shape into an array of paths
     function normalize(out: unknown): any[] {
       let data: any = out;
       try {
-        if (typeof data === 'string') {
-          data = JSON.parse(data);
-        }
-      } catch (_) {
-        // ignore JSON parse errors; will fall through to []
-      }
+        if (typeof data === 'string') data = JSON.parse(data);
+      } catch (_) {}
 
       if (Array.isArray(data)) return data;
       if (data && Array.isArray((data as any).suggestedCareerPaths)) return (data as any).suggestedCareerPaths;
       if (data && Array.isArray((data as any).careerPaths)) return (data as any).careerPaths;
-
-      // If response is an object grouping arrays by interest, flatten them
       if (data && typeof data === 'object') {
         const arrays: any[] = [];
         for (const key of Object.keys(data)) {
           const val = (data as any)[key];
-          if (Array.isArray(val)) {
-            arrays.push(...val);
-          }
+          if (Array.isArray(val)) arrays.push(...val);
         }
         if (arrays.length > 0) return arrays;
       }
       return [];
     }
 
-    const normalized = normalize(output);
-    return { suggestedCareerPaths: normalized };
+    // Local fallback suggestions if AI call fails (or returns empty)
+    function fallbackSuggestions(interests: string[]) {
+      const catalog: Record<string, { careerPath: string; requiredSkills: string[] }[]> = {
+        'Artificial Intelligence': [
+          { careerPath: 'Machine Learning Engineer', requiredSkills: ['Python', 'Machine Learning', 'TensorFlow', 'PyTorch', 'Data Structures', 'Statistics'] },
+          { careerPath: 'AI Researcher', requiredSkills: ['Python', 'Deep Learning', 'NLP', 'Research Methods', 'Mathematics'] },
+        ],
+        'Web Development': [
+          { careerPath: 'Frontend Developer', requiredSkills: ['HTML', 'CSS', 'JavaScript', 'React', 'TypeScript'] },
+          { careerPath: 'Full-Stack Developer', requiredSkills: ['Node.js', 'Express', 'React', 'Databases', 'REST APIs'] },
+        ],
+        'UI/UX Design': [
+          { careerPath: 'UI/UX Designer', requiredSkills: ['Figma', 'Wireframing', 'Prototyping', 'Design Systems', 'User Research'] },
+          { careerPath: 'Product Designer', requiredSkills: ['Interaction Design', 'Visual Design', 'Usability Testing', 'Figma'] },
+        ],
+        'Data Science': [
+          { careerPath: 'Data Scientist', requiredSkills: ['Python', 'Pandas', 'Machine Learning', 'Statistics', 'SQL'] },
+          { careerPath: 'Data Analyst', requiredSkills: ['SQL', 'Excel', 'Tableau/PowerBI', 'Python', 'Data Cleaning'] },
+        ],
+        'Cybersecurity': [
+          { careerPath: 'Security Analyst', requiredSkills: ['Network Security', 'SIEM', 'Incident Response', 'Linux', 'Scripting'] },
+          { careerPath: 'Penetration Tester', requiredSkills: ['Linux', 'Networking', 'Burp Suite', 'OWASP', 'Scripting'] },
+        ],
+        'Mobile App Development': [
+          { careerPath: 'Android Developer', requiredSkills: ['Kotlin', 'Android SDK', 'Jetpack', 'REST APIs'] },
+          { careerPath: 'Flutter Developer', requiredSkills: ['Dart', 'Flutter', 'State Management', 'REST APIs'] },
+        ],
+        'Cloud Computing': [
+          { careerPath: 'Cloud Engineer', requiredSkills: ['AWS/Azure/GCP', 'Linux', 'Terraform', 'Networking', 'Containers'] },
+          { careerPath: 'DevOps Engineer', requiredSkills: ['CI/CD', 'Docker', 'Kubernetes', 'Monitoring', 'Scripting'] },
+        ],
+        'Game Development': [
+          { careerPath: 'Game Developer', requiredSkills: ['Unity/Unreal', 'C# or C++', 'Game Physics', '3D Math'] },
+          { careerPath: 'Technical Artist', requiredSkills: ['Shaders', '3D Pipelines', 'Scripting', 'Rendering'] },
+        ],
+      };
+
+      const seen = new Set<string>();
+      const paths: any[] = [];
+      for (const interest of interests) {
+        const items = catalog[interest] || [];
+        for (const item of items) {
+          if (seen.has(item.careerPath)) continue;
+          seen.add(item.careerPath);
+          const gap = item.requiredSkills.slice(0, Math.min(3, item.requiredSkills.length)).map((s) => ({
+            skill: s,
+            yourLevel: 'Beginner',
+            recommendedCourses: [
+              { title: `${s} Crash Course (YouTube)`, link: 'https://www.youtube.com/results?search_query=' + encodeURIComponent(s + ' tutorial') },
+              { title: `${s} Specialization (Coursera)`, link: 'https://www.coursera.org/search?query=' + encodeURIComponent(s) },
+            ],
+          }));
+          paths.push({
+            careerPath: item.careerPath,
+            requiredSkills: item.requiredSkills,
+            missingSkills: item.requiredSkills,
+            weakSkills: gap.map((g) => g.skill),
+            projectSuggestions: [
+              { title: `${item.careerPath} Portfolio Project`, description: 'Build and deploy a production-ready project demonstrating core skills.', link: 'https://roadmap.sh' },
+            ],
+            roadmap: [
+              { title: 'Foundations', steps: ['Learn fundamentals', 'Build mini-projects'] },
+              { title: 'Intermediate', steps: ['Take a specialization', 'Build a capstone'] },
+              { title: 'Advanced', steps: ['Contribute to open source', 'Apply for internships'] },
+            ],
+            tags: [interest],
+            skillGapReport: gap,
+          });
+        }
+      }
+      return paths.length ? paths : [
+        { careerPath: 'Generalist Software Engineer', requiredSkills: ['Problem Solving', 'Git', 'JavaScript/TypeScript'], missingSkills: ['Testing'], weakSkills: ['System Design'], projectSuggestions: [], roadmap: [], tags: [], skillGapReport: [] },
+      ];
+    }
+
+    try {
+      const { output } = await analyzeProfilePrompt(input);
+      const normalized = normalize(output);
+      if (!normalized.length) {
+        return { suggestedCareerPaths: fallbackSuggestions(input.interests), resumeInsights: { pros: ['Basic profile analyzed'], cons: ['AI output empty; used fallback'] } };
+      }
+      return { suggestedCareerPaths: normalized };
+    } catch (err) {
+      console.error('AI call failed, using fallback:', err);
+      return {
+        suggestedCareerPaths: fallbackSuggestions(input.interests),
+        resumeInsights: {
+          pros: ['Generated locally using interest-based defaults'],
+          cons: ['Live AI service unavailable; results may be generic'],
+        },
+      };
+    }
   }
 );
 
